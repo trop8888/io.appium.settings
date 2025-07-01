@@ -15,7 +15,12 @@ A small and simple Android application that deals with the system settings. Then
 * [Java JDK](http://www.oracle.com/technetwork/java/javase/downloads/index.html)
 * [Gradle](https://gradle.org/)
 
-You may also consider using [Android Studio](https://developer.android.com/studio/index.html) to debug the code easily.
+You may also consider using the latest [Android Studio](https://developer.android.com/studio/index.html) to debug the code easily.
+
+### Enable access to non-SDK interfaces
+
+[Restrictions on non-SDK interfaces](https://developer.android.com/guide/app-compatibility/restrictions-non-sdk-interfaces#test-for-non-sdk) could affect some functionalities.
+Changing of the system locale in API Level 34 or later demonstrates the above restriction. Please [enable access to non-SDK interfaces](https://developer.android.com/guide/app-compatibility/restrictions-non-sdk-interfaces#how_can_i_enable_access_to_non-sdk_interfaces) via `adb`. [This issue comment](https://github.com/appium/io.appium.settings/issues/180#issuecomment-2156279885) is adb logcat output when the non-SDK interfaces are enabled, or disabled (system default). Please try out a device reboot if the same logcat continues even after setting the hidden api policy.
 
 ## Building
 
@@ -45,6 +50,41 @@ To uninstall:
 $ adb uninstall io.appium.settings
 ```
 
+## Using the JavaScript wrapper
+
+This module exports the [SettingsApp](./lib/client.js) class, which allows you to automate the below interactions with JavaScript.
+The wrapper expects you to also have the [appium-adb](https://github.com/appium/appium-adb) module listed
+in your dependencies. The actual version of the appium-adb module must satisfy the same semver requirement this module
+has in its [devDependencies](./package.json).
+Here is the usage example:
+
+```js
+import ADB from 'appium-adb'
+import { SettingsApp } from 'io.appium.settings';
+
+async function main() {
+  // It is expected 'io.appium.settings' is already installed on the device
+  // and the neccessary permissions are granted to it.
+  // Check https://github.com/appium/appium-android-driver/blob/master/lib/helpers/android.ts
+  // if you are looking on how to automate this process.
+  const app = new SettingsApp({
+    adb: await ADB.createADB()
+  });
+  const recorder = app.makeMediaProjectionRecorder();
+  const filename = 'video.mp4';
+  const didStart = await recorder.start({filename});
+  if (didStart) {
+    log.info(`A new media projection recording '${filename}' has been successfully started`);
+  } else {
+    log.info('A new media projection recording was unable to start. Is it already running?');
+  }
+}
+
+main();
+```
+
+The module also exports various constants containing its service and action names, that could be useful in your
+scripts. Check [constants.js](./lib/constants.js) for more details.
 
 ## Changing of system settings
 
@@ -98,24 +138,38 @@ To turn on `animation`:
 $ adb shell am broadcast -a io.appium.settings.animation --es setstatus enable
 ```
 
+(Note that [Restrictions on non-SDK interfaces](https://developer.android.com/guide/app-compatibility/restrictions-non-sdk-interfaces) affects this animation command.)
+
 To turn off `animation`:
 
 ```shell
 $ adb shell am broadcast -a io.appium.settings.animation --es setstatus disable
 ```
 
+(Note that [Restrictions on non-SDK interfaces](https://developer.android.com/guide/app-compatibility/restrictions-non-sdk-interfaces) affects this animation command.)
+
 Set particular locale:
 
 ```shell
+# If not granted already, grant locale change permission https://developer.android.com/reference/android/Manifest.permission#CHANGE_CONFIGURATION
+$ adb shell pm grant io.appium.settings android.permission.CHANGE_CONFIGURATION
 $ adb shell am broadcast -a io.appium.settings.locale -n io.appium.settings/.receivers.LocaleSettingReceiver --es lang ja --es country JP
 $ adb shell getprop persist.sys.locale # ja-JP
 $ adb shell am broadcast -a io.appium.settings.locale -n io.appium.settings/.receivers.LocaleSettingReceiver --es lang zh --es country CN --es script Hans
 $ adb shell getprop persist.sys.locale # zh-Hans-CN for API level 21+
+# When 'skip_locale_check' parameter is set appium settings application doesn't check that locale you are trying to set is a valid locale string, by default it validates the locale and throws error when invalid
+$ adb shell am broadcast -a io.appium.settings.locale -n io.appium.settings/.receivers.LocaleSettingReceiver --es lang xx --es country US --es skip_locale_check 1
 ```
 
 You can set the [Locale](https://developer.android.com/reference/java/util/Locale.html) format, especially this feature support [Locale(String language, String country)](https://developer.android.com/reference/java/util/Locale.html#Locale(java.lang.String,%20java.lang.String)) so far.
 
 `-n io.appium.settings/.receivers.LocaleSettingReceiver` is not necessary in some devices.
+
+List all supported locales as base64-encoded JSON:
+
+```shell
+$ adb shell am broadcast -a io.appium.settings.list_locales
+```
 
 ## Retrieval of system settings
 
@@ -141,10 +195,15 @@ option would have no effect.
 
 ## Setting Mock Locations
 
+Please set the Appium Settings from the Settings app's _Developer Options_ -> _Select mock location app_.
+Or `adb shell appops set io.appium.settings android:mock_location allow` let you do the same via adb command.
+`adb shell appops set io.appium.settings android:mock_location deny` is to turn it off.
+
+
 Start sending scheduled updates (every 2s) for mock location with the specified values by executing:
 (API versions 26+):
 ```shell
-$ adb shell am start-foreground-service --user 0 -n io.appium.settings/.LocationService --es longitude {longitude-value} --es latitude {latitude-value} [--es altitude {altitude-value}]
+$ adb shell am start-foreground-service --user 0 -n io.appium.settings/.LocationService --es longitude {longitude-value} --es latitude {latitude-value} [--es altitude {altitude-value}] [--es speed {speed-value}] [--es bearing {bearing-value}] [--es accuracy {accuracy-value}]
 ```
 (Older versions):
 ```shell
@@ -320,6 +379,36 @@ This command will _recursively_ scan all files inside of `/sdcard/media` folder
 and add them to the media library if their MIME types are supported. If the
 file/folder in _path_ does not exist/is not readable or is not provided then an
 error will be returned and the corresponding log message would be written into logs.
+
+## Internal Audio & Video Recording
+
+Required steps to activate recording:
+
+```bash
+adb shell pm grant io.appium.settings android.permission.RECORD_AUDIO
+adb shell appops set io.appium.settings PROJECT_MEDIA allow
+```
+
+Start Recording:
+```bash
+adb shell am start -n "io.appium.settings/io.appium.settings.Settings" -a io.appium.settings.recording.ACTION_START --es filename abc.mp4 --es priority high --es max_duration_sec 900 --es resolution 1920x1080
+```
+
+### Arguments (see above start command as an example for giving arguments)
+- filename (Mandatory) - You can type recording video file name as you want, but recording currently supports only "mp4" format so your filename must end with ".mp4"
+- priority (Optional) - Default value: "high" which means recording thread priority is maximum however if you face performance drops during testing with recording enabled, you can reduce recording priority to "normal" or "low"
+- max_duration_sec (Optional) (in seconds) - Default value: 900 seconds which means maximum allowed duration is 15 minute, you can increase it if your test takes longer than that
+- resolution (Optional) - Default value: maximum supported resolution on-device(Detected automatically on app itself), which usually equals to Full HD 1920x1080 on most phones however you can change it to following supported resolutions as well: "1920x1080", "1280x720", "720x480", "320x240", "176x144"
+
+Stop Recording:
+```bash
+adb shell am start -n "io.appium.settings/io.appium.settings.Settings" -a io.appium.settings.recording.ACTION_STOP
+```
+
+Obtain Recording Output File:
+```bash
+adb pull /storage/emulated/0/Android/data/io.appium.settings/files/abc.mp4 abc.mp4
+```
 
 
 ## Notes:
